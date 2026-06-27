@@ -5,8 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"runtime/debug"
+	"sync"
 
+	"github.com/arunsworld/nursery"
 	"github.com/kakkky/scope"
+	"github.com/sourcegraph/conc/pool"
+	"golang.org/x/sync/errgroup"
 )
 
 type result struct {
@@ -19,6 +24,7 @@ func main() {
 	llm, err := client.NewLLMGeminiProvider()
 	if err != nil {
 		fmt.Println("error:", err)
+		return
 	}
 
 	hackerNewsClient := client.NewHackerNews()
@@ -29,7 +35,6 @@ func main() {
 	ctx := context.Background()
 
 	switch *pkg {
-	case "errgroup":
 	case "kakkky/scope":
 		var results []result
 		err := scope.Run(ctx, func(s *scope.Scope) error {
@@ -43,6 +48,7 @@ func main() {
 			results = make([]result, len(ids))
 			s.Scope(func(child *scope.Scope) error {
 				for i, id := range ids {
+					i, id := i, id
 					child.Go(func(ctx context.Context) error {
 						title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 						if err != nil {
@@ -61,10 +67,127 @@ func main() {
 			return
 		}
 		printResults(results)
-	case "conc":
-	case "nurnsely":
-	default:
 
+	case "errgroup":
+		ids, err := fetchTopStoryIDs(hackerNewsClient, 10)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		results := make([]result, len(ids))
+		sem := make(chan struct{}, 5)
+		g, ctx := errgroup.WithContext(ctx)
+		for i, id := range ids {
+			g.Go(func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
+				if err != nil {
+					return err
+				}
+				results[i] = result{id: id, title: title, summary: summary}
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		printResults(results)
+
+	case "conc":
+		ids, err := fetchTopStoryIDs(hackerNewsClient, 10)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		results := make([]result, len(ids))
+		p := pool.New().WithMaxGoroutines(5).WithErrors().WithContext(ctx)
+		for i, id := range ids {
+			p.Go(func(ctx context.Context) error {
+				title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
+				if err != nil {
+					return err
+				}
+				results[i] = result{id: id, title: title, summary: summary}
+				return nil
+			})
+		}
+		if err := p.Wait(); err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		printResults(results)
+
+	case "nursery":
+		ids, err := fetchTopStoryIDs(hackerNewsClient, 10)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		results := make([]result, len(ids))
+		jobs := make([]nursery.ConcurrentJob, len(ids))
+		for i, id := range ids {
+			jobs[i] = func(ctx context.Context, errCh chan error) {
+				title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				results[i] = result{id: id, title: title, summary: summary}
+			}
+		}
+		if err := nursery.RunConcurrentlyWithContext(ctx, jobs...); err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		printResults(results)
+
+	default: // raw goroutine
+		ids, err := fetchTopStoryIDs(hackerNewsClient, 10)
+		if err != nil {
+			fmt.Println("error:", err)
+			return
+		}
+		results := make([]result, len(ids))
+		sem := make(chan struct{}, 5)
+		var wg sync.WaitGroup
+		var firstErr error
+		var mu sync.Mutex
+		for i, id := range ids {
+			i, id := i, id
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+						}
+						mu.Unlock()
+					}
+				}()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					return
+				}
+				results[i] = result{id: id, title: title, summary: summary}
+			}()
+		}
+		wg.Wait()
+		if firstErr != nil {
+			fmt.Println("error:", firstErr)
+			return
+		}
+		printResults(results)
 	}
 }
 
