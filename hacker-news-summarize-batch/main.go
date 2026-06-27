@@ -43,7 +43,6 @@ func main() {
 			results = make([]result, len(ids))
 			s.Scope(func(child *scope.Scope) error {
 				for i, id := range ids {
-					i, id := i, id
 					child.Go(func(ctx context.Context) error {
 						title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 						if err != nil {
@@ -61,13 +60,17 @@ func main() {
 			fmt.Println("error:", err)
 			return
 		}
-		for i, res := range results {
-			fmt.Printf("[%d] %s (id: %d)\n%s\n\n", i+1, res.title, res.id, res.summary)
-		}
+		printResults(results)
 	case "conc":
 	case "nurnsely":
 	default:
 
+	}
+}
+
+func printResults(results []result) {
+	for i, res := range results {
+		fmt.Printf("#%d タイトル: %s\n   ID: %d\n   サマリ: %s\n\n", i+1, res.title, res.id, res.summary)
 	}
 }
 
