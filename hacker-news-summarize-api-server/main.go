@@ -46,7 +46,7 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 		pkg := r.URL.Query().Get("pkg")
 
 		ctx := r.Context()
-		ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
+		ids, err := fetchTopStoryIDs(ctx, hackerNewsClient, limit)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -176,8 +176,8 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 	}
 }
 
-func fetchTopStoryIDs(c *client.HackerNews, limit int) ([]int, error) {
-	res, err := c.ListTopStories()
+func fetchTopStoryIDs(ctx context.Context, c *client.HackerNews, limit int) ([]int, error) {
+	res, err := c.ListTopStories(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func fetchTopStoryIDs(c *client.HackerNews, limit int) ([]int, error) {
 }
 
 func fetchAndSummarize(ctx context.Context, c *client.HackerNews, llm *client.LLMGeminiProvider, id int) (title, summary string, err error) {
-	item, err := c.GetItem(id)
+	item, err := c.GetItem(ctx, id)
 	if err != nil {
 		return "", "", err
 	}

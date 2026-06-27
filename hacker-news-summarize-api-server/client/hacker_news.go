@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,9 +22,13 @@ func NewHackerNews() *HackerNews {
 
 type ListTopStoriesResponse []int
 
-func (h *HackerNews) ListTopStories() (ListTopStoriesResponse, error) {
+func (h *HackerNews) ListTopStories(ctx context.Context) (ListTopStoriesResponse, error) {
 	url := fmt.Sprintf("%s/%s", hackerNewsBaseURL, "beststories.json")
-	resp, err := h.client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +51,13 @@ type GetItemResponse struct {
 	URL   string `json:"url"`
 }
 
-func (h *HackerNews) GetItem(id int) (GetItemResponse, error) {
+func (h *HackerNews) GetItem(ctx context.Context, id int) (GetItemResponse, error) {
 	url := fmt.Sprintf("%s/item/%d.json", hackerNewsBaseURL, id)
-	resp, err := h.client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return GetItemResponse{}, err
+	}
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return GetItemResponse{}, err
 	}
