@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"runtime/debug"
 	"server/client"
 	"strconv"
 	"sync"
@@ -51,57 +50,55 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 		var handlerErr error
 
 		switch pkg {
-		case "kakkky/scope":
+		case "scope":
+			resultCh := make(chan result, limit)
 			err := scope.Run(ctx, func(s *scope.Scope) error {
-				idsF := scope.GoFuture(s, func(ctx context.Context) ([]int, error) {
-					return fetchTopStoryIDs(hackerNewsClient, limit)
-				})
-				ids, err := idsF.Wait()
+				ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
 				if err != nil {
 					return err
 				}
-				results = make([]result, len(ids))
-				s.Scope(func(child *scope.Scope) error {
-					for i, id := range ids {
-						child.Go(func(ctx context.Context) error {
-							title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
-							if err != nil {
-								return err
-							}
-							results[i] = result{ID: id, Title: title, Summary: summary}
-							fmt.Printf("[done] id=%d\n", id)
-							return nil
-						})
-					}
-					return nil
-				}, scope.WithMaxConcurrency(5))
+				for _, id := range ids {
+					s.Go(func(ctx context.Context) error {
+						title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
+						if err != nil {
+							return err
+						}
+						resultCh <- result{ID: id, Title: title, Summary: summary}
+						fmt.Printf("[done] id=%d\n", id)
+						return nil
+					})
+				}
 				return nil
 			})
+			close(resultCh)
+			for r := range resultCh {
+				results = append(results, r)
+			}
 			handlerErr = err
-
 		case "errgroup":
 			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
 			if err != nil {
 				handlerErr = err
 				break
 			}
-			results = make([]result, len(ids))
-			sem := make(chan struct{}, 5)
+			resultCh := make(chan result, len(ids))
 			g, ctx := errgroup.WithContext(ctx)
-			for i, id := range ids {
+			for _, id := range ids {
 				g.Go(func() error {
-					sem <- struct{}{}
-					defer func() { <-sem }()
 					title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 					if err != nil {
 						return err
 					}
-					results[i] = result{ID: id, Title: title, Summary: summary}
+					resultCh <- result{ID: id, Title: title, Summary: summary}
 					fmt.Printf("[done] id=%d\n", id)
 					return nil
 				})
 			}
 			handlerErr = g.Wait()
+			close(resultCh)
+			for r := range resultCh {
+				results = append(results, r)
+			}
 
 		case "conc":
 			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
@@ -109,20 +106,24 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 				handlerErr = err
 				break
 			}
-			results = make([]result, len(ids))
-			p := pool.New().WithMaxGoroutines(5).WithErrors().WithContext(ctx)
-			for i, id := range ids {
+			resultCh := make(chan result, len(ids))
+			p := pool.New().WithErrors().WithContext(ctx)
+			for _, id := range ids {
 				p.Go(func(ctx context.Context) error {
 					title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 					if err != nil {
 						return err
 					}
-					results[i] = result{ID: id, Title: title, Summary: summary}
+					resultCh <- result{ID: id, Title: title, Summary: summary}
 					fmt.Printf("[done] id=%d\n", id)
 					return nil
 				})
 			}
 			handlerErr = p.Wait()
+			close(resultCh)
+			for r := range resultCh {
+				results = append(results, r)
+			}
 
 		case "nursery":
 			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
@@ -130,20 +131,25 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 				handlerErr = err
 				break
 			}
-			results = make([]result, len(ids))
+			resultCh := make(chan result, len(ids))
 			jobs := make([]nursery.ConcurrentJob, len(ids))
 			for i, id := range ids {
+				id := id
 				jobs[i] = func(ctx context.Context, errCh chan error) {
 					title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 					if err != nil {
 						errCh <- err
 						return
 					}
-					results[i] = result{ID: id, Title: title, Summary: summary}
+					resultCh <- result{ID: id, Title: title, Summary: summary}
 					fmt.Printf("[done] id=%d\n", id)
 				}
 			}
 			handlerErr = nursery.RunConcurrentlyWithContext(ctx, jobs...)
+			close(resultCh)
+			for r := range resultCh {
+				results = append(results, r)
+			}
 
 		default: // raw goroutine
 			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
@@ -151,26 +157,14 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 				handlerErr = err
 				break
 			}
-			results = make([]result, len(ids))
-			sem := make(chan struct{}, 5)
+			resultCh := make(chan result, len(ids))
 			var wg sync.WaitGroup
 			var firstErr error
 			var mu sync.Mutex
-			for i, id := range ids {
+			for _, id := range ids {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					defer func() {
-						if r := recover(); r != nil {
-							mu.Lock()
-							if firstErr == nil {
-								firstErr = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-							}
-							mu.Unlock()
-						}
-					}()
-					sem <- struct{}{}
-					defer func() { <-sem }()
 					title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 					if err != nil {
 						mu.Lock()
@@ -180,11 +174,15 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 						mu.Unlock()
 						return
 					}
-					results[i] = result{ID: id, Title: title, Summary: summary}
+					resultCh <- result{ID: id, Title: title, Summary: summary}
 					fmt.Printf("[done] id=%d\n", id)
 				}()
 			}
 			wg.Wait()
+			close(resultCh)
+			for r := range resultCh {
+				results = append(results, r)
+			}
 			handlerErr = firstErr
 		}
 
