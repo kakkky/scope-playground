@@ -7,7 +7,7 @@ import (
 	"google.golang.org/genai"
 )
 
-const model = "gemini-2.5-flash-lite"
+const model = "gemini-3.1-flash-lite"
 
 type LLMGeminiProvider struct {
 	client *genai.Client
@@ -26,13 +26,10 @@ func NewLLMGeminiProvider() (*LLMGeminiProvider, error) {
 }
 
 func (p *LLMGeminiProvider) Generate(ctx context.Context, prompt string) (string, error) {
-	gcc := &genai.GenerateContentConfig{
-		ResponseMIMEType: "application/json",
-	}
 	contents := []*genai.Content{
 		genai.NewContentFromText(prompt, genai.RoleUser),
 	}
-	resp, err := p.client.Models.GenerateContent(ctx, model, contents, gcc)
+	resp, err := p.client.Models.GenerateContent(ctx, model, contents, nil)
 	if err != nil {
 		return "", err
 	}
