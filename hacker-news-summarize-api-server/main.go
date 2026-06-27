@@ -46,17 +46,18 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 		pkg := r.URL.Query().Get("pkg")
 
 		ctx := r.Context()
+		ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		var results []result
 		var handlerErr error
 
 		switch pkg {
 		case "scope":
-			resultCh := make(chan result, limit)
+			resultCh := make(chan result, len(ids))
 			err := scope.Run(ctx, func(s *scope.Scope) error {
-				ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
-				if err != nil {
-					return err
-				}
 				for _, id := range ids {
 					s.Go(func(ctx context.Context) error {
 						title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
@@ -76,11 +77,6 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 			}
 			handlerErr = err
 		case "errgroup":
-			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
-			if err != nil {
-				handlerErr = err
-				break
-			}
 			resultCh := make(chan result, len(ids))
 			g, ctx := errgroup.WithContext(ctx)
 			for _, id := range ids {
@@ -101,11 +97,6 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 			}
 
 		case "conc":
-			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
-			if err != nil {
-				handlerErr = err
-				break
-			}
 			resultCh := make(chan result, len(ids))
 			p := pool.New().WithErrors().WithContext(ctx)
 			for _, id := range ids {
@@ -126,15 +117,9 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 			}
 
 		case "nursery":
-			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
-			if err != nil {
-				handlerErr = err
-				break
-			}
 			resultCh := make(chan result, len(ids))
 			jobs := make([]nursery.ConcurrentJob, len(ids))
 			for i, id := range ids {
-				id := id
 				jobs[i] = func(ctx context.Context, errCh chan error) {
 					title, summary, err := fetchAndSummarize(ctx, hackerNewsClient, llm, id)
 					if err != nil {
@@ -152,11 +137,6 @@ func trendSummaryHandler(hackerNewsClient *client.HackerNews, llm *client.LLMGem
 			}
 
 		default: // raw goroutine
-			ids, err := fetchTopStoryIDs(hackerNewsClient, limit)
-			if err != nil {
-				handlerErr = err
-				break
-			}
 			resultCh := make(chan result, len(ids))
 			var wg sync.WaitGroup
 			var firstErr error
